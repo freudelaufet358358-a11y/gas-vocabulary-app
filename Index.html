@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <title>単語学習アプリ</title>
+  <?!= include('Stylesheet'); ?>
+</head>
+<body>
+  <!-- ローディング画面 -->
+  <div id="loading-screen" class="screen active">
+    <div class="loading-container">
+      <div class="spinner"></div>
+      <p id="loading-message">起動中...</p>
+      <p id="loading-detail" class="loading-detail"></p>
+    </div>
+  </div>
+
+  <!-- メニュー画面 -->
+  <div id="menu-screen" class="screen">
+    <div class="container">
+      <!-- サイドバー（PC版で表示） -->
+      <aside class="sidebar">
+        <div class="sidebar-content">
+          <!-- 単語帳選択 -->
+          <div class="book-selector-section">
+            <h2>📖 単語帳選択</h2>
+            <select id="book-selector" class="form-control" onchange="switchBook(this.value)">
+              <!-- 選択肢は動的に追加 -->
+            </select>
+          </div>
+
+          <h2>📚 <span id="current-book-name">単語帳</span></h2>
+          <div class="word-stats">
+            <p><strong>総単語数:</strong> <span id="total-words">0</span></p>
+            <p><strong>学習済み:</strong> <span id="learned-words">0</span></p>
+            <p><strong>未学習:</strong> <span id="unlearned-words">0</span></p>
+          </div>
+          
+          <!-- 単語帳フィルター -->
+          <div class="word-filter-section">
+            <label for="word-filter-select" class="filter-label">表示する単語:</label>
+            <select id="word-filter-select" class="form-control" onchange="setWordFilter(this.value)">
+              <option value="all">📋 全単語</option>
+              <option value="mistakes">❌ ミスした問題のみ</option>
+              <option value="learned">✅ 学習済みのみ</option>
+              <option value="unlearned">📖 未学習のみ</option>
+            </select>
+          </div>
+          
+          <div id="word-list-sidebar" class="word-list-container">
+            <!-- 単語リストがここに表示されます -->
+          </div>
+        </div>
+      </aside>
+
+      <!-- メインコンテンツ -->
+      <main class="main-content">
+        <!-- 学習ダッシュボード（ミニマルデザイン） -->
+        <section class="dashboard-minimal">
+          <div class="stat-item">
+            <span class="stat-icon-mini">🎯</span>
+            <span class="stat-value-mini" id="accuracy-rate">0%</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon-mini">✅</span>
+            <span class="stat-value-mini" id="correct-count">0</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon-mini">🔥</span>
+            <span class="stat-value-mini"><span id="current-streak">0</span>日</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-icon-mini">⭐</span>
+            <span class="stat-value-mini">Lv.<span id="current-level">1</span></span>
+          </div>
+          <div class="stat-item progress-item">
+            <div class="progress-mini-container">
+              <div class="progress-mini-fill" id="xp-progress" style="width: 0%"></div>
+            </div>
+            <span class="progress-mini-text"><span id="current-xp">0</span>/<span id="next-level-xp">100</span> XP</span>
+          </div>
+        </section>
+
+        <!-- モバイル用単語帳セクション -->
+        <section class="mobile-wordlist-section">
+          <button class="btn btn-secondary" id="show-wordlist-mobile">
+            📚 単語帳を表示・切り替え
+          </button>
+        </section>
+
+        <!-- 現在の単語帳表示 -->
+        <section class="current-book-display">
+          <div class="book-info-card">
+            <h3>📖 現在の単語帳: <span id="current-book-display-name">-</span></h3>
+          </div>
+        </section>
+
+        <!-- テストカードグリッド -->
+        <div class="cards-grid">
+          <!-- 復習テストカード（先に配置） -->
+          <div class="test-card">
+            <h3>🔄 復習テスト</h3>
+            <p class="card-description">苦手な単語を重点的に学習します</p>
+            
+            <div class="test-option">
+              <button class="btn btn-primary btn-block" onclick="startTest('mistakes')">
+                ❌ ミスした問題のみ
+              </button>
+              <p class="option-note">前回間違えた単語を復習</p>
+            </div>
+
+            <div class="test-option">
+              <button class="btn btn-primary btn-block" onclick="startTest('unlearned')">
+                📖 未学習の単語のみ
+              </button>
+              <p class="option-note">まだ学習していない単語</p>
+            </div>
+
+            <div class="test-option">
+              <button class="btn btn-primary btn-block" onclick="startTest('all')">
+                🎲 全単語からランダム
+              </button>
+              <p class="option-note">すべての単語からランダム出題</p>
+            </div>
+          </div>
+
+          <!-- カスタムテストカード（後に配置） -->
+          <div class="test-card">
+            <h3>📝 カスタムテスト</h3>
+            <p class="card-description">範囲を指定してテストを開始します</p>
+            
+            <div class="form-group">
+              <label for="mode-select">出題言語モード:</label>
+              <select id="mode-select" class="form-control">
+                <option value="random">ランダム</option>
+                <option value="E_to_J">英語 → 日本語</option>
+                <option value="J_to_E">日本語 → 英語</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="start-row">開始番号:</label>
+              <input type="number" id="start-row" class="form-control" value="1" min="1" 
+                     inputmode="numeric" pattern="[0-9]*" onkeypress="return event.charCode >= 48 && event.charCode <= 57">
+            </div>
+
+            <div class="form-group">
+              <label for="end-row">終了番号:</label>
+              <input type="number" id="end-row" class="form-control" value="10" min="1"
+                     inputmode="numeric" pattern="[0-9]*" onkeypress="return event.charCode >= 48 && event.charCode <= 57">
+            </div>
+
+            <button class="btn btn-primary" onclick="startTest('range')">
+              テスト開始
+            </button>
+          </div>
+        </div>
+
+        <!-- UI設定パネル（ページの最後） -->
+        <section class="settings-card">
+          <button class="settings-toggle" onclick="toggleSettings()">
+            ⚙️ 表示設定
+          </button>
+          <div id="settings-panel" class="settings-panel hidden">
+            <div class="setting-group">
+              <label for="font-size-slider">フォントサイズ:</label>
+              <div class="slider-container">
+                <span class="slider-label">小</span>
+                <input type="range" id="font-size-slider" min="1" max="4" value="2" step="1">
+                <span class="slider-label">大</span>
+              </div>
+              <div class="font-preview" id="font-preview">
+                プレビュー: これがサンプルテキストです
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- テスト画面 -->
+  <div id="test-screen" class="screen">
+    <div class="test-container">
+      <div class="test-header">
+        <button class="btn btn-back" onclick="confirmExit()">← 戻る</button>
+        <div class="test-info">
+          <span id="progress-text">問題 1 / 10</span>
+          <span class="mode-badge" id="current-mode">英語 → 日本語</span>
+        </div>
+      </div>
+
+      <div class="question-card">
+        <h2 class="question-label">問題</h2>
+        <div class="question-content">
+          <div class="question-text" id="question">Loading...</div>
+          <button class="btn btn-speak" id="speak-btn" onclick="speakQuestion()" style="display:none;">
+            🔊 発音
+          </button>
+        </div>
+      </div>
+
+      <div class="answer-section">
+        <button class="btn btn-primary btn-lg" id="show-choices-btn" onclick="showChoices()">
+          選択肢を表示
+        </button>
+        <button class="btn btn-secondary btn-lg" id="idk-btn" onclick="markAsIncorrect()">
+          わからない
+        </button>
+      </div>
+
+      <div id="choices-container" class="choices-container hidden">
+        <div id="choices" class="choices-grid">
+          <!-- 選択肢がここに表示されます -->
+        </div>
+      </div>
+
+      <div id="feedback" class="feedback"></div>
+
+      <button class="btn btn-primary btn-lg hidden" id="next-btn" onclick="nextQuestion()">
+        次の問題へ →
+      </button>
+    </div>
+  </div>
+
+  <!-- 結果画面 -->
+  <div id="end-screen" class="screen">
+    <div class="result-container">
+      <div class="result-header">
+        <h1>🎉 テスト完了！</h1>
+      </div>
+
+      <div class="result-score">
+        <div class="score-circle">
+          <div class="score-value" id="final-score">10/10</div>
+        </div>
+        <p class="result-message" id="result-message">素晴らしい！</p>
+      </div>
+
+      <div class="result-stats">
+        <div class="result-stat">
+          <span class="result-label">獲得経験値</span>
+          <span class="result-value" id="xp-gained">+100 XP</span>
+        </div>
+        <div class="result-stat">
+          <span class="result-label">正答率</span>
+          <span class="result-value" id="final-accuracy">100%</span>
+        </div>
+      </div>
+
+      <!-- テスト情報を保存する隠しフィールド -->
+      <div id="last-test-settings" style="display:none;">
+        <input type="hidden" id="last-test-mode" value="">
+        <input type="hidden" id="last-test-start" value="">
+        <input type="hidden" id="last-test-end" value="">
+        <input type="hidden" id="last-test-direction" value="">
+      </div>
+
+      <div class="result-actions">
+        <button class="btn btn-success btn-lg" onclick="retryTest()">
+          🔄 もう一回学習
+        </button>
+        <button class="btn btn-primary btn-lg" onclick="showMenuScreen()">
+          📚 メニューに戻る
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- モバイル用単語帳モーダル -->
+  <div id="wordlist-modal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>📚 <span id="modal-book-name">単語帳</span></h2>
+        <button class="modal-close" onclick="closeWordlistModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <!-- 単語帳選択（モバイル） -->
+        <div class="book-selector-section-mobile">
+          <label for="book-selector-modal">単語帳:</label>
+          <select id="book-selector-modal" class="form-control" onchange="switchBook(this.value)">
+            <!-- 選択肢は動的に追加 -->
+          </select>
+        </div>
+
+        <div class="word-stats">
+          <p><strong>総単語数:</strong> <span id="total-words-modal">0</span></p>
+          <p><strong>学習済み:</strong> <span id="learned-words-modal">0</span></p>
+          <p><strong>未学習:</strong> <span id="unlearned-words-modal">0</span></p>
+        </div>
+        
+        <!-- モバイル用単語帳フィルター -->
+        <div class="word-filter-section">
+          <button class="btn-filter" id="filter-all-modal" onclick="setWordFilter('all')">
+            📋 すべて
+          </button>
+          <button class="btn-filter" id="filter-mistakes-modal" onclick="setWordFilter('mistakes')">
+            ❌ 間違った問題のみ
+          </button>
+        </div>
+        
+        <div id="word-list-modal" class="word-list-container">
+          <!-- 単語リストがここに表示されます -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>
