@@ -4,10 +4,14 @@
   <base target="_top">
   <meta charset="UTF-8">
   <title>単語学習アプリ</title>
+  <style>
+    @media (prefers-color-scheme: dark) {
+      body { background-color: #121212 !important; }
+    }
+  </style>
   <?!= include('Stylesheet'); ?>
 </head>
 <body>
-  <!-- ローディング画面 -->
   <div id="loading-screen" class="screen active">
     <div class="loading-container">
       <div class="spinner"></div>
@@ -16,18 +20,14 @@
     </div>
   </div>
 
-  <!-- メニュー画面 -->
   <div id="menu-screen" class="screen">
     <div class="container">
-      <!-- サイドバー（PC版で表示） -->
       <aside class="sidebar">
         <div class="sidebar-content">
-          <!-- 単語帳選択 -->
           <div class="book-selector-section">
             <h2>📖 単語帳選択</h2>
             <select id="book-selector" class="form-control" onchange="switchBook(this.value)">
-              <!-- 選択肢は動的に追加 -->
-            </select>
+              </select>
           </div>
 
           <h2>📚 <span id="current-book-name">単語帳</span></h2>
@@ -37,7 +37,6 @@
             <p><strong>未学習:</strong> <span id="unlearned-words">0</span></p>
           </div>
           
-          <!-- 単語帳フィルター -->
           <div class="word-filter-section">
             <label for="word-filter-select" class="filter-label">表示する単語:</label>
             <select id="word-filter-select" class="form-control" onchange="setWordFilter(this.value)">
@@ -49,14 +48,11 @@
           </div>
           
           <div id="word-list-sidebar" class="word-list-container">
-            <!-- 単語リストがここに表示されます -->
-          </div>
+            </div>
         </div>
       </aside>
 
-      <!-- メインコンテンツ -->
       <main class="main-content">
-        <!-- 学習ダッシュボード（ミニマルデザイン） -->
         <section class="dashboard-minimal">
           <div class="stat-item">
             <span class="stat-icon-mini">🎯</span>
@@ -82,26 +78,31 @@
           </div>
         </section>
 
-        <!-- モバイル用単語帳セクション -->
         <section class="mobile-wordlist-section">
           <button class="btn btn-secondary" id="show-wordlist-mobile">
             📚 単語帳を表示・切り替え
           </button>
         </section>
 
-        <!-- 現在の単語帳表示 -->
         <section class="current-book-display">
           <div class="book-info-card">
             <h3>📖 現在の単語帳: <span id="current-book-display-name">-</span></h3>
           </div>
         </section>
 
-        <!-- テストカードグリッド -->
         <div class="cards-grid">
-          <!-- 復習テストカード（先に配置） -->
           <div class="test-card">
             <h3>🔄 復習テスト</h3>
             <p class="card-description">苦手な単語を重点的に学習します</p>
+            
+            <div class="form-group">
+              <label for="review-mode-select" style="font-size:0.85em; color:var(--text-secondary);">出題モード:</label>
+              <select id="review-mode-select" class="form-control">
+                <option value="random">🔀 ランダム</option>
+                <option value="E_to_J">🇺🇸 英語 → 🇯🇵 日本語</option>
+                <option value="J_to_E">🇯🇵 日本語 → 🇺🇸 英語</option>
+              </select>
+            </div>
             
             <div class="test-option">
               <button class="btn btn-primary btn-block" onclick="startTest('mistakes')">
@@ -125,7 +126,6 @@
             </div>
           </div>
 
-          <!-- カスタムテストカード（後に配置） -->
           <div class="test-card">
             <h3>📝 カスタムテスト</h3>
             <p class="card-description">範囲を指定してテストを開始します</p>
@@ -157,7 +157,6 @@
           </div>
         </div>
 
-        <!-- UI設定パネル（ページの最後） -->
         <section class="settings-card">
           <button class="settings-toggle" onclick="toggleSettings()">
             ⚙️ 表示設定
@@ -180,7 +179,6 @@
     </div>
   </div>
 
-  <!-- テスト画面 -->
   <div id="test-screen" class="screen">
     <div class="test-container">
       <div class="test-header">
@@ -212,8 +210,7 @@
 
       <div id="choices-container" class="choices-container hidden">
         <div id="choices" class="choices-grid">
-          <!-- 選択肢がここに表示されます -->
-        </div>
+          </div>
       </div>
 
       <div id="feedback" class="feedback"></div>
@@ -224,7 +221,6 @@
     </div>
   </div>
 
-  <!-- 結果画面 -->
   <div id="end-screen" class="screen">
     <div class="result-container">
       <div class="result-header">
@@ -249,7 +245,6 @@
         </div>
       </div>
 
-      <!-- テスト情報を保存する隠しフィールド -->
       <div id="last-test-settings" style="display:none;">
         <input type="hidden" id="last-test-mode" value="">
         <input type="hidden" id="last-test-start" value="">
@@ -268,7 +263,6 @@
     </div>
   </div>
 
-  <!-- モバイル用単語帳モーダル -->
   <div id="wordlist-modal" class="modal hidden">
     <div class="modal-content">
       <div class="modal-header">
@@ -276,12 +270,10 @@
         <button class="modal-close" onclick="closeWordlistModal()">×</button>
       </div>
       <div class="modal-body">
-        <!-- 単語帳選択（モバイル） -->
         <div class="book-selector-section-mobile">
           <label for="book-selector-modal">単語帳:</label>
           <select id="book-selector-modal" class="form-control" onchange="switchBook(this.value)">
-            <!-- 選択肢は動的に追加 -->
-          </select>
+            </select>
         </div>
 
         <div class="word-stats">
@@ -290,19 +282,18 @@
           <p><strong>未学習:</strong> <span id="unlearned-words-modal">0</span></p>
         </div>
         
-        <!-- モバイル用単語帳フィルター -->
         <div class="word-filter-section">
-          <button class="btn-filter" id="filter-all-modal" onclick="setWordFilter('all')">
-            📋 すべて
-          </button>
-          <button class="btn-filter" id="filter-mistakes-modal" onclick="setWordFilter('mistakes')">
-            ❌ 間違った問題のみ
-          </button>
+          <label for="word-filter-select-modal" class="filter-label">表示する単語:</label>
+          <select id="word-filter-select-modal" class="form-control" onchange="setWordFilter(this.value)">
+            <option value="all">📋 全単語</option>
+            <option value="mistakes">❌ ミスした問題のみ</option>
+            <option value="learned">✅ 学習済みのみ</option>
+            <option value="unlearned">📖 未学習のみ</option>
+          </select>
         </div>
         
         <div id="word-list-modal" class="word-list-container">
-          <!-- 単語リストがここに表示されます -->
-        </div>
+          </div>
       </div>
     </div>
   </div>

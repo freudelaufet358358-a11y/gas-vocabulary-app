@@ -16,8 +16,14 @@ let userStats = {};
 let testStartTime = null;
 let autoSaveEnabled = true;
 let recentlyTestedIds = []; // 過去30問で出題された単語ID
+let pendingTestResults = []; // オフライン時の保留データ
+
+// 音声関連
 let speechSynthesis = window.speechSynthesis;
 let speechSupported = 'speechSynthesis' in window;
+let currentUtterance = null; // ガベージコレクション対策
+
+// ★修正: オンライン判定を追加
 let isOnline = navigator.onLine;
 
 // 現在選択中の単語帳
@@ -36,18 +42,14 @@ let lastTestSettings = {
 // キャッシュとUI設定
 let cachedWordData = {};  // 単語帳ごとにキャッシュを保存
 let cachedStatsData = null;
-let cacheTimestamp = null;
-const CACHE_DURATION = 30 * 1000; // 30秒キャッシュ（リアルタイム更新に対応）
+const CACHE_DURATION = 30 * 1000; // 30秒キャッシュ
 
-// オフライン対応
+// UI設定
 let uiSettings = {
-  fontSize: 2, // 1=small, 2=medium, 3=large, 4=xlarge
-  wordListFilter: 'all', // all, mistakes, learned, unlearned
-  currentBookId: 'target1900', // 現在選択中の単語帳
-  customTestRange: { // カスタムテストの範囲を保存
-    start: 1,
-    end: 10
-  }
+  fontSize: 2,
+  wordListFilter: 'all',
+  currentBookId: 'target1900',
+  customTestRange: { start: 1, end: 10 }
 };
 
 // ===================================
@@ -56,7 +58,7 @@ let uiSettings = {
 window.onload = function() {
   console.log('アプリケーション初期化開始');
   
-  // オンライン/オフラインイベントリスナーを設定
+  // オンライン/オフラインイベントリスナー
   window.addEventListener('online', handleOnline);
   window.addEventListener('offline', handleOffline);
   
@@ -66,12 +68,8 @@ window.onload = function() {
   // オフライン時の保留結果を読み込み
   loadPendingResults();
   
-  // フォントサイズを即座に適用
-  const fontSizeClasses = ['font-small', 'font-medium', 'font-large', 'font-xlarge'];
-  document.body.classList.remove(...fontSizeClasses);
-  const fontSizeClass = fontSizeClasses[uiSettings.fontSize - 1] || 'font-medium';
-  document.body.classList.add(fontSizeClass);
-  console.log('初期フォントサイズ適用:', fontSizeClass);
+  // フォントサイズ適用
+  applyUISettings();
   
   // 現在の単語帳IDを復元
   currentBookId = uiSettings.currentBookId || 'target1900';
@@ -88,19 +86,14 @@ function loadUISettings() {
     const saved = localStorage.getItem('uiSettings');
     if (saved) {
       const loadedSettings = JSON.parse(saved);
-      // 古いバージョンとの互換性を保つ
-      uiSettings = {
-        ...uiSettings,
-        ...loadedSettings
-      };
+      uiSettings = { ...uiSettings, ...loadedSettings };
       
-      // カスタムテストの範囲を復元
       if (uiSettings.customTestRange) {
-        document.getElementById('start-row').value = uiSettings.customTestRange.start;
-        document.getElementById('end-row').value = uiSettings.customTestRange.end;
+        const startEl = document.getElementById('start-row');
+        const endEl = document.getElementById('end-row');
+        if(startEl) startEl.value = uiSettings.customTestRange.start;
+        if(endEl) endEl.value = uiSettings.customTestRange.end;
       }
-      
-      console.log('UI設定を読み込みました:', uiSettings);
     }
   } catch (e) {
     console.error('UI設定の読み込みエラー:', e);
@@ -110,31 +103,22 @@ function loadUISettings() {
 function saveUISettings() {
   try {
     localStorage.setItem('uiSettings', JSON.stringify(uiSettings));
-    console.log('UI設定を保存しました:', uiSettings);
   } catch (e) {
     console.error('UI設定の保存エラー:', e);
   }
 }
 
 function applyUISettings() {
-  // フォントサイズの適用
   const fontSizeClasses = ['font-small', 'font-medium', 'font-large', 'font-xlarge'];
   document.body.classList.remove(...fontSizeClasses);
-  
-  // フォントサイズクラスを追加
   const fontSizeClass = fontSizeClasses[uiSettings.fontSize - 1] || 'font-medium';
   document.body.classList.add(fontSizeClass);
   
-  console.log('フォントサイズクラスを適用:', fontSizeClass);
-  
-  // スライダーの位置を設定
   const slider = document.getElementById('font-size-slider');
   if (slider) {
     slider.value = uiSettings.fontSize;
     updateFontPreview();
   }
-  
-  // フィルターボタンの状態を更新
   updateFilterButtons();
 }
 
@@ -143,7 +127,7 @@ function toggleSettings() {
   panel.classList.toggle('hidden');
 }
 
-// フォントサイズスライダーのイベントリスナー
+// スライダーイベント
 document.addEventListener('DOMContentLoaded', function() {
   const slider = document.getElementById('font-size-slider');
   if (slider) {
@@ -171,13 +155,10 @@ function switchBook(bookId) {
   currentBookId = bookId;
   uiSettings.currentBookId = bookId;
   saveUISettings();
-  
-  // 該当する単語帳のデータを読み込み
   loadWordData();
 }
 
 function updateBookSelectors() {
-  // PC版とモバイル版の両方のセレクターを更新
   const selectors = [
     document.getElementById('book-selector'),
     document.getElementById('book-selector-modal')
@@ -198,7 +179,6 @@ function updateBookSelectors() {
     }
   });
   
-  // 現在の単語帳名を表示
   const currentBook = availableBooks.find(b => b.id === currentBookId);
   if (currentBook) {
     const nameElements = [
@@ -206,7 +186,6 @@ function updateBookSelectors() {
       document.getElementById('current-book-display-name'),
       document.getElementById('modal-book-name')
     ];
-    
     nameElements.forEach(el => {
       if (el) el.textContent = currentBook.name;
     });
@@ -217,35 +196,24 @@ function updateBookSelectors() {
 // 単語帳フィルター機能
 // ===================================
 function setWordFilter(filter) {
-  console.log('フィルターを変更:', filter);
   uiSettings.wordListFilter = filter;
   saveUISettings();
   updateFilterButtons();
   
-  // 検索値をクリア
-  const searchInputs = document.querySelectorAll('#word-search-input');
-  searchInputs.forEach(input => {
-    input.value = '';
-  });
+  const searchInputs = document.querySelectorAll('.word-search-input'); // クラス指定に変更
+  searchInputs.forEach(input => input.value = '');
   
-  // フィルターを適用して単語リストを更新
   const filteredWords = getFilteredWords();
   displayWordList(filteredWords);
-  
-  console.log('フィルター適用後の単語数:', filteredWords.length);
 }
 
 function updateFilterButtons() {
-  // ドロップダウンの選択状態を更新
   const selectElements = [
     document.getElementById('word-filter-select'),
     document.getElementById('word-filter-select-modal')
   ];
-  
   selectElements.forEach(select => {
-    if (select) {
-      select.value = uiSettings.wordListFilter;
-    }
+    if (select) select.value = uiSettings.wordListFilter;
   });
 }
 
@@ -255,7 +223,6 @@ function updateFilterButtons() {
 function loadWordData() {
   updateLoadingMessage('キャッシュ確認中...');
   
-  // キャッシュが有効かチェック
   const cached = loadFromCache();
   if (cached) {
     console.log('キャッシュからデータを読み込みました');
@@ -267,18 +234,15 @@ function loadWordData() {
     recentlyTestedIds = cached.recentlyTestedIds || [];
     availableBooks = cached.availableBooks || [];
     
-    // 短い遅延後に画面遷移（ユーザーにフィードバック）
     setTimeout(() => {
       initializeMenu();
       changeScreen('menu-screen');
     }, 100);
     
-    // バックグラウンドで最新データを取得（キャッシュ更新用）
-    refreshDataInBackground();
+    if(isOnline) refreshDataInBackground();
     return;
   }
   
-  // キャッシュがない場合は通常通り読み込み
   updateLoadingMessage('データ取得中...', '初回起動のため少しお待ちください');
   fetchWordData();
 }
@@ -286,16 +250,12 @@ function loadWordData() {
 function updateLoadingMessage(main, detail = '') {
   const mainEl = document.getElementById('loading-message');
   const detailEl = document.getElementById('loading-detail');
-  
   if (mainEl) mainEl.textContent = main;
   if (detailEl) detailEl.textContent = detail;
 }
 
 function fetchWordData() {
   if (!isOnline) {
-    console.log('オフライン状態：キャッシュからデータを使用');
-    updateLoadingMessage('オフラインモード', 'キャッシュデータを確認中');
-    
     const cached = loadFromCache();
     if (cached) {
       allWords = cached.words;
@@ -316,31 +276,19 @@ function fetchWordData() {
   google.script.run
     .withSuccessHandler(function(response) {
       if (response.success) {
-        updateLoadingMessage('データ処理中...', '単語リストを準備しています');
-        
         allWords = response.words;
         allWordsForChoices = response.words;
         userStats = response.stats;
         recentlyTestedIds = response.recentlyTestedIds || [];
         availableBooks = response.availableBooks || [];
         
-        // 現在の単語帳情報を確認
         if (response.bookInfo) {
           currentBookId = response.bookInfo.id;
           uiSettings.currentBookId = currentBookId;
           saveUISettings();
         }
         
-        // キャッシュに保存
         saveToCache(response.words, response.stats, response.recentlyTestedIds, response.availableBooks);
-        
-        console.log('読み込んだ単語数:', allWords.length);
-        console.log('利用可能な単語帳:', availableBooks);
-        console.log('現在の単語帳:', currentBookId);
-        console.log('不正解のある単語:', allWords.filter(w => w.incorrectCount > 0).length);
-        console.log('過去30問で出題された単語数:', recentlyTestedIds.length);
-        
-        updateLoadingMessage('完了！', '起動しています');
         
         setTimeout(() => {
           initializeMenu();
@@ -353,10 +301,7 @@ function fetchWordData() {
     })
     .withFailureHandler(function(error) {
       console.error('データ読み込みエラー:', error);
-      updateLoadingMessage('エラーが発生しました', 'オフラインモードに切り替えます');
-      setTimeout(() => {
-        handleOfflineError();
-      }, 1000);
+      handleOfflineError();
     })
     .getWordLists(currentBookId);
 }
@@ -365,28 +310,22 @@ function refreshDataInBackground() {
   google.script.run
     .withSuccessHandler(function(response) {
       if (response.success) {
-        // キャッシュを更新
         saveToCache(response.words, response.stats, response.recentlyTestedIds, response.availableBooks);
-        // データも更新
         allWords = response.words;
         allWordsForChoices = response.words;
         userStats = response.stats;
         recentlyTestedIds = response.recentlyTestedIds || [];
         availableBooks = response.availableBooks || [];
-        // ダッシュボードを更新
         updateDashboard();
-        console.log('バックグラウンドでキャッシュとデータを更新しました');
+        console.log('バックグラウンド更新完了');
       }
     })
-    .withFailureHandler(function(error) {
-      console.log('バックグラウンド更新エラー（無視します）:', error);
-    })
+    .withFailureHandler(error => console.log('BG更新エラー:', error))
     .getWordLists(currentBookId);
 }
 
 function saveToCache(words, stats, recentlyTested = [], books = []) {
   try {
-    // 単語帳ごとにキャッシュを保存
     cachedWordData[currentBookId] = {
       words: words,
       stats: stats,
@@ -394,9 +333,7 @@ function saveToCache(words, stats, recentlyTested = [], books = []) {
       availableBooks: books,
       timestamp: Date.now()
     };
-    
     localStorage.setItem('wordDataCache_' + currentBookId, JSON.stringify(cachedWordData[currentBookId]));
-    console.log('データをキャッシュに保存しました:', currentBookId);
   } catch (e) {
     console.error('キャッシュ保存エラー:', e);
   }
@@ -406,10 +343,8 @@ function loadFromCache() {
   try {
     const cached = localStorage.getItem('wordDataCache_' + currentBookId);
     if (!cached) return null;
-    
     const cacheData = JSON.parse(cached);
     const age = Date.now() - cacheData.timestamp;
-    
     if (age < CACHE_DURATION) {
       return {
         words: cacheData.words,
@@ -417,25 +352,10 @@ function loadFromCache() {
         recentlyTestedIds: cacheData.recentlyTestedIds || [],
         availableBooks: cacheData.availableBooks || []
       };
-    } else {
-      console.log('キャッシュが古いため無視します');
-      return null;
     }
-  } catch (e) {
-    console.error('キャッシュ読み込みエラー:', e);
     return null;
-  }
-}
-
-function clearCache() {
-  try {
-    // すべての単語帳のキャッシュをクリア
-    availableBooks.forEach(book => {
-      localStorage.removeItem('wordDataCache_' + book.id);
-    });
-    console.log('キャッシュをクリアしました');
   } catch (e) {
-    console.error('キャッシュクリアエラー:', e);
+    return null;
   }
 }
 
@@ -443,25 +363,20 @@ function clearCache() {
 // オンライン/オフライン対応
 // ===================================
 function handleOnline() {
-  console.log('オンラインに復帰しました');
+  console.log('オンライン復帰');
   isOnline = true;
-  
-  // 保留中の結果を同期
   syncPendingResults();
-  
-  // データを最新に更新
-  fetchWordData();
+  refreshDataInBackground();
 }
 
 function handleOffline() {
-  console.log('オフラインになりました');
+  console.log('オフライン検知');
   isOnline = false;
 }
 
 function handleOfflineError() {
   const cached = loadFromCache();
   if (cached) {
-    console.log('オフライン状態：キャッシュからデータを使用');
     allWords = cached.words;
     allWordsForChoices = cached.words;
     userStats = cached.stats;
@@ -469,98 +384,79 @@ function handleOfflineError() {
     availableBooks = cached.availableBooks || [];
     initializeMenu();
     changeScreen('menu-screen');
-    alert('オフライン状態です。キャッシュデータを使用します。');
+    alert('通信エラー。キャッシュデータを使用します。');
   } else {
-    alert('データの読み込みに失敗しました。オフライン状態でキャッシュもありません。');
+    alert('データの読み込みに失敗しました。');
   }
 }
 
 function loadPendingResults() {
   try {
     const saved = localStorage.getItem('pendingTestResults');
-    if (saved) {
-      pendingTestResults = JSON.parse(saved);
-      console.log('保留中の結果を読み込みました:', pendingTestResults.length);
-    }
-  } catch (e) {
-    console.error('保留結果の読み込みエラー:', e);
-  }
+    if (saved) pendingTestResults = JSON.parse(saved);
+  } catch (e) { console.error(e); }
 }
 
 function savePendingResults() {
   try {
     localStorage.setItem('pendingTestResults', JSON.stringify(pendingTestResults));
-    console.log('保留中の結果を保存しました');
-  } catch (e) {
-    console.error('保留結果の保存エラー:', e);
-  }
+  } catch (e) { console.error(e); }
 }
 
 function syncPendingResults() {
-  if (pendingTestResults.length === 0) {
-    return;
-  }
+  if (pendingTestResults.length === 0) return;
+  console.log('保留結果同期開始:', pendingTestResults.length);
   
-  console.log('保留中の結果を同期中:', pendingTestResults.length);
-  
-  // 保留中のテスト結果から各問題を個別に送信
   let syncCount = 0;
   let totalItems = 0;
   
-  pendingTestResults.forEach(testResult => {
-    if (testResult.wordResults && testResult.wordResults.length > 0) {
-      testResult.wordResults.forEach(item => {
-        totalItems++;
-        
-        // 単語情報を取得
-        const word = allWords.find(w => w.id === item.wordId);
-        if (word) {
-          google.script.run
-            .withSuccessHandler(function(response) {
-              syncCount++;
-              console.log(`保留結果を同期 (${syncCount}/${totalItems})`);
-              
-              // すべて同期完了したら統計を更新
-              if (syncCount === totalItems) {
-                console.log('すべての保留結果を同期完了。統計を更新します');
-                google.script.run
-                  .withSuccessHandler(function(response) {
-                    if (response.success) {
-                      userStats = response.stats;
-                      updateDashboard();
-                      console.log('統計更新完了');
-                    }
-                  })
-                  .updateWordStatisticsFromAllLog(currentBookId);
-              }
-            })
-            .withFailureHandler(function(error) {
-              console.error('保留結果の同期エラー:', error);
-            })
-            .logTestResult(item.wordId, item.correct, item.direction, item.userAnswer, word.english, word.japanese, currentBookId);
-        }
-      });
+  // フラット化して処理
+  const itemsToSync = [];
+  pendingTestResults.forEach(group => {
+    if(group.wordResults) itemsToSync.push(...group.wordResults);
+  });
+  totalItems = itemsToSync.length;
+  
+  if(totalItems === 0) {
+    pendingTestResults = [];
+    savePendingResults();
+    return;
+  }
+
+  itemsToSync.forEach(item => {
+    const word = allWords.find(w => w.id === item.wordId);
+    if (word) {
+      google.script.run
+        .withSuccessHandler(() => {
+          syncCount++;
+          if (syncCount === totalItems) {
+            console.log('全同期完了。統計更新。');
+            google.script.run
+              .withSuccessHandler(res => {
+                if(res.success) {
+                  userStats = res.stats;
+                  updateDashboard();
+                }
+              })
+              .updateWordStatisticsFromAllLog(currentBookId);
+          }
+        })
+        .logTestResult(item.wordId, item.correct, item.direction, item.userAnswer, word.english, word.japanese, currentBookId);
+    } else {
+      syncCount++; // 単語が見つからない場合も進める
     }
   });
   
-  // 同期後、保留リストをクリア
   pendingTestResults = [];
   savePendingResults();
 }
 
 // ===================================
-// メニュー画面の初期化
+// メニュー画面・ダッシュボード
 // ===================================
 function initializeMenu() {
-  console.log('メニュー画面を初期化');
-  
-  // UI設定を適用（スライダーなどのDOM要素が存在する）
   applyUISettings();
-  
-  // 単語帳セレクターを更新
   updateBookSelectors();
-  
-  // ダッシュボードと単語リストを更新
   updateDashboard();
   updateWordList();
   updateEndRowInputs();
@@ -578,385 +474,221 @@ function updateDashboard() {
   document.getElementById('current-streak').textContent = userStats.currentStreak || 0;
   document.getElementById('current-level').textContent = userStats.level || 1;
   
-  // レベルプログレスバーの更新
   const currentXP = userStats.xp || 0;
   const currentLevel = userStats.level || 1;
-  const xpForCurrentLevel = (currentLevel - 1) * 100;
   const xpForNextLevel = currentLevel * 100;
-  const xpInCurrentLevel = currentXP - xpForCurrentLevel;
-  const xpNeededForNextLevel = xpForNextLevel - xpForCurrentLevel;
-  const progressPercent = (xpInCurrentLevel / xpNeededForNextLevel) * 100;
+  const xpInCurrentLevel = currentXP - ((currentLevel - 1) * 100);
+  const xpNeeded = 100;
+  const progressPercent = Math.min(100, (xpInCurrentLevel / xpNeeded) * 100);
   
   document.getElementById('current-xp').textContent = xpInCurrentLevel;
-  document.getElementById('next-level-xp').textContent = xpNeededForNextLevel;
+  document.getElementById('next-level-xp').textContent = xpNeeded;
   document.getElementById('xp-progress').style.width = progressPercent + '%';
 }
 
 function updateWordList() {
   const learnedCount = allWords.filter(w => w.learned).length;
   const unlearnedCount = allWords.length - learnedCount;
-  const actualWordCount = allWords.length;
   
-  // PC用サイドバー
-  document.getElementById('total-words').textContent = actualWordCount;
+  // PC
+  document.getElementById('total-words').textContent = allWords.length;
   document.getElementById('learned-words').textContent = learnedCount;
   document.getElementById('unlearned-words').textContent = unlearnedCount;
-  
-  // モバイル用モーダル
-  document.getElementById('total-words-modal').textContent = actualWordCount;
+  // Mobile
+  document.getElementById('total-words-modal').textContent = allWords.length;
   document.getElementById('learned-words-modal').textContent = learnedCount;
   document.getElementById('unlearned-words-modal').textContent = unlearnedCount;
   
-  // フィルターに基づいて単語を絞り込み
-  let displayWords = getFilteredWords();
-  
-  // 単語リストの表示
+  const displayWords = getFilteredWords();
   displayWordList(displayWords);
-  
-  // 検索機能の追加
   setupWordSearch();
 }
 
-// フィルターされた単語リストを取得する関数
 function getFilteredWords(searchQuery = '') {
   let words = allWords;
+  if (uiSettings.wordListFilter === 'mistakes') words = words.filter(w => w.incorrectCount > 0);
+  else if (uiSettings.wordListFilter === 'learned') words = words.filter(w => w.learned);
+  else if (uiSettings.wordListFilter === 'unlearned') words = words.filter(w => !w.learned);
   
-  // まずフィルターを適用
-  if (uiSettings.wordListFilter === 'mistakes') {
-    words = words.filter(w => w.incorrectCount > 0);
-  } else if (uiSettings.wordListFilter === 'learned') {
-    words = words.filter(w => w.learned);
-  } else if (uiSettings.wordListFilter === 'unlearned') {
-    words = words.filter(w => !w.learned);
-  }
-  // 'all'の場合はフィルタリングしない
-  
-  // 次に検索クエリを適用
   if (searchQuery) {
-    const queryLower = searchQuery.toLowerCase();
-    const hiraganaQuery = toHiragana(searchQuery);
-    const katakanaQuery = toKatakana(searchQuery);
-    
-    words = words.filter(word => {
-      const idMatch = String(word.id).includes(searchQuery);
-      const englishMatch = word.english.toLowerCase().includes(queryLower);
-      const japaneseMatch = word.japanese.includes(searchQuery);
-      const hiraganaMatch = word.japanese.includes(hiraganaQuery);
-      const katakanaMatch = word.japanese.includes(katakanaQuery);
-      
-      return idMatch || englishMatch || japaneseMatch || hiraganaMatch || katakanaMatch;
-    });
+    const q = searchQuery.toLowerCase();
+    const hira = toHiragana(searchQuery);
+    const kata = toKatakana(searchQuery);
+    words = words.filter(w => 
+      String(w.id).includes(searchQuery) ||
+      w.english.toLowerCase().includes(q) ||
+      w.japanese.includes(searchQuery) ||
+      w.japanese.includes(hira) ||
+      w.japanese.includes(kata)
+    );
   }
-  
   return words;
 }
 
 function displayWordList(words) {
-  // 現在の検索値とカーソル位置を保存
-  const currentSearchInput = document.getElementById('word-search-input');
-  const currentSearchValue = currentSearchInput?.value || '';
-  const currentSelectionStart = currentSearchInput?.selectionStart || 0;
-  const currentSelectionEnd = currentSearchInput?.selectionEnd || 0;
+  const searchInput = document.querySelector('.word-search-input');
+  const currentVal = searchInput ? searchInput.value : '';
   
-  const wordListHTML = words.map(word => {
-    const mistakeInfo = word.incorrectCount > 0 
-      ? `<div class="word-mistake">❌ ${word.incorrectCount}回ミス</div>` 
-      : '';
-    
-    return `
-      <div class="word-item">
-        <div class="word-id">#${word.id}</div>
-        <div class="word-english">${escapeHtml(word.english)}</div>
-        <div class="word-japanese">${escapeHtml(word.japanese)}</div>
-        ${word.learned ? '<div class="word-learned">✓ 学習済み</div>' : ''}
-        ${mistakeInfo}
-      </div>
-    `;
-  }).join('');
-  
-  // フィルター情報を表示
-  const mistakesCount = allWords.filter(w => w.incorrectCount > 0).length;
-  let filterInfo = '';
-  if (uiSettings.wordListFilter === 'mistakes') {
-    filterInfo = `間違った単語 ${words.length} / ${mistakesCount} 件を表示中`;
-  } else {
-    filterInfo = `全 ${words.length} / ${allWords.length} 件を表示中`;
-  }
-  
-  const footerHTML = `<div class="word-list-footer">${filterInfo}</div>`;
-  
-  const searchHTML = `
-    <div class="word-search">
-      <input type="text" id="word-search-input" class="word-search-input" placeholder="🔍 単語を検索（英語・日本語・番号）..." value="${escapeHtml(currentSearchValue)}">
+  const html = words.map(w => `
+    <div class="word-item">
+      <div class="word-id">#${w.id}</div>
+      <div class="word-english">${escapeHtml(w.english)}</div>
+      <div class="word-japanese">${escapeHtml(w.japanese)}</div>
+      ${w.learned ? '<div class="word-learned">✓ 学習済み</div>' : ''}
+      ${w.incorrectCount > 0 ? `<div class="word-mistake">❌ ${w.incorrectCount}回ミス</div>` : ''}
     </div>
-  `;
+  `).join('');
   
-  document.getElementById('word-list-sidebar').innerHTML = searchHTML + wordListHTML + footerHTML;
-  document.getElementById('word-list-modal').innerHTML = searchHTML + wordListHTML + footerHTML;
+  const footer = `<div class="word-list-footer">${words.length}件表示中</div>`;
+  const searchBox = `
+    <div class="word-search">
+      <input type="text" class="word-search-input form-control" placeholder="検索..." value="${escapeHtml(currentVal)}">
+    </div>`;
+    
+  const content = searchBox + html + footer;
+  document.getElementById('word-list-sidebar').innerHTML = content;
+  document.getElementById('word-list-modal').innerHTML = content;
   
-  // 検索機能を再設定
   setupWordSearch();
   
-  // フォーカスとカーソル位置を確実に復元
-  const searchInput = document.getElementById('word-search-input');
-  if (searchInput) {
-    // 次のフレームで実行して、確実にDOM更新後に処理
-    requestAnimationFrame(() => {
-      searchInput.focus();
-      searchInput.setSelectionRange(currentSelectionStart, currentSelectionEnd);
-    });
+  // フォーカス維持
+  const newInput = document.querySelector('.word-search-input');
+  if(newInput && document.activeElement.classList.contains('word-search-input')) {
+    newInput.focus();
+    newInput.setSelectionRange(newInput.value.length, newInput.value.length);
   }
 }
 
 function setupWordSearch() {
-  const searchInputs = document.querySelectorAll('#word-search-input');
-  
-  searchInputs.forEach(input => {
-    let isComposing = false;
-    let searchTimeout = null;
-    
-    // IME変換開始時
-    input.addEventListener('compositionstart', function() {
-      isComposing = true;
-    });
-    
-    // IME変換終了時
-    input.addEventListener('compositionend', function(e) {
-      isComposing = false;
-      // 変換確定後に検索を実行
-      const query = e.target.value.trim();
-      console.log('検索クエリ（変換確定）:', query);
-      console.log('現在のフィルター:', uiSettings.wordListFilter);
-      
-      const filtered = getFilteredWords(query);
-      console.log('検索結果:', filtered.length, '件');
-      displayWordList(filtered);
-    });
-    
-    input.addEventListener('input', function(e) {
-      // IME変換中は検索をスキップ
-      if (isComposing) {
-        return;
-      }
-      
-      // 前のタイマーをクリア（デバウンス）
-      if (searchTimeout) {
-        clearTimeout(searchTimeout);
-      }
-      
-      // 200ms後に検索を実行（入力が落ち着いてから）
-      searchTimeout = setTimeout(() => {
-        const query = e.target.value.trim();
-        
-        console.log('検索クエリ:', query);
-        console.log('現在のフィルター:', uiSettings.wordListFilter);
-        
-        // フィルターと検索の両方を適用
-        const filtered = getFilteredWords(query);
-        
-        console.log('検索結果:', filtered.length, '件');
+  const inputs = document.querySelectorAll('.word-search-input');
+  inputs.forEach(input => {
+    input.oninput = (e) => {
+      // デバウンス簡易実装
+      clearTimeout(input.timer);
+      input.timer = setTimeout(() => {
+        const filtered = getFilteredWords(e.target.value);
         displayWordList(filtered);
-      }, 200);
-    });
+      }, 300);
+    };
   });
 }
 
-// ひらがなをカタカナに変換
 function toKatakana(str) {
-  return str.replace(/[\u3041-\u3096]/g, function(match) {
-    const chr = match.charCodeAt(0) + 0x60;
-    return String.fromCharCode(chr);
-  });
+  return str.replace(/[\u3041-\u3096]/g, m => String.fromCharCode(m.charCodeAt(0) + 0x60));
 }
-
-// カタカナをひらがなに変換
 function toHiragana(str) {
-  return str.replace(/[\u30a1-\u30f6]/g, function(match) {
-    const chr = match.charCodeAt(0) - 0x60;
-    return String.fromCharCode(chr);
-  });
+  return str.replace(/[\u30a1-\u30f6]/g, m => String.fromCharCode(m.charCodeAt(0) - 0x60));
 }
 
 function updateEndRowInputs() {
-  const maxRow = allWords.length;
+  const max = allWords.length;
+  const endInput = document.getElementById('end-row');
+  const startInput = document.getElementById('start-row');
   
-  // 保存された範囲を適用、上限を超えている場合は調整
-  const savedEnd = uiSettings.customTestRange?.end || 10;
-  const endValue = Math.min(savedEnd, maxRow);
-  
-  document.getElementById('end-row').value = endValue;
-  document.getElementById('end-row').max = maxRow;
-  
-  // 開始番号も保存された値を適用
-  if (uiSettings.customTestRange?.start) {
-    document.getElementById('start-row').value = uiSettings.customTestRange.start;
+  if(endInput) {
+    endInput.max = max;
+    endInput.value = Math.min(uiSettings.customTestRange.end || 10, max);
+  }
+  if(startInput) {
+    startInput.value = uiSettings.customTestRange.start || 1;
   }
 }
 
 // ===================================
-// モバイル用単語帳モーダル
+// モバイル用モーダル
 // ===================================
-document.getElementById('show-wordlist-mobile')?.addEventListener('click', function() {
+document.getElementById('show-wordlist-mobile')?.addEventListener('click', () => {
   document.getElementById('wordlist-modal').classList.remove('hidden');
 });
-
 function closeWordlistModal() {
   document.getElementById('wordlist-modal').classList.add('hidden');
 }
 
-document.getElementById('wordlist-modal')?.addEventListener('click', function(e) {
-  if (e.target === this) {
-    closeWordlistModal();
-  }
-});
-
 // ===================================
-// テスト開始
+// テスト開始（修正版）
 // ===================================
 function startTest(mode) {
   testMode = mode;
   correctAnswers = 0;
   testResults = [];
   testStartTime = new Date();
-  
-  // テスト設定を保存
   lastTestSettings.mode = mode;
   lastTestSettings.bookId = currentBookId;
   
-  // テスト用の単語リストを準備
+  // ★修正: モードに応じて方向設定を取得する場所を変える
   if (mode === 'range') {
-    const startRow = parseInt(document.getElementById('start-row').value) || 1;
-    const endRow = parseInt(document.getElementById('end-row').value) || 10;
-    
-    // カスタムテストの範囲を保存
-    uiSettings.customTestRange = {
-      start: startRow,
-      end: endRow
-    };
-    saveUISettings();
-    
-    lastTestSettings.startRow = startRow;
-    lastTestSettings.endRow = endRow;
+    // カスタムテストの場合
     lastTestSettings.direction = document.getElementById('mode-select').value;
     
-    // 入力値の検証
-    if (isNaN(startRow) || isNaN(endRow)) {
-      alert('開始行と終了行には数字を入力してください。');
+    const s = parseInt(document.getElementById('start-row').value) || 1;
+    const e = parseInt(document.getElementById('end-row').value) || 10;
+    uiSettings.customTestRange = { start: s, end: e };
+    saveUISettings();
+    lastTestSettings.startRow = s;
+    lastTestSettings.endRow = e;
+    
+    if (s < 1 || e > allWords.length || s > e) {
+      alert('範囲指定が不正です');
       return;
     }
+    currentTestWords = allWords.slice(s - 1, e);
     
-    if (startRow < 1 || endRow > allWords.length || startRow > endRow) {
-      alert(`範囲指定が正しくありません。\n\n有効な範囲: 1〜${allWords.length}\n開始行は終了行以下である必要があります。`);
-      return;
-    }
+  } else {
+    // ★修正: 復習テスト系の場合、新しいセレクトボックスから値を取得
+    lastTestSettings.direction = document.getElementById('review-mode-select').value;
     
-    currentTestWords = allWords.slice(startRow - 1, endRow);
-    console.log(`範囲テスト: ${startRow}〜${endRow} (${currentTestWords.length}問)`);
-  } else if (mode === 'mistakes') {
-    // 不正解のある単語のみ
-    currentTestWords = allWords.filter(word => word.incorrectCount > 0);
-    
-    console.log('ミステスト: 対象単語数 =', currentTestWords.length);
-    console.log('単語例:', currentTestWords.slice(0, 3));
-    
-    if (currentTestWords.length === 0) {
-      alert('間違えた単語がまだありません。\n\n通常のテストで間違えてからお試しください。');
-      return;
-    }
-  } else if (mode === 'unlearned') {
-    currentTestWords = allWords.filter(word => !word.learned);
-    
-    if (currentTestWords.length === 0) {
-      alert('すべての単語が学習済みです！\n\n素晴らしいですね！');
-      return;
-    }
-  } else if (mode === 'all') {
-    // 過去30問で出題された単語を除外
-    currentTestWords = allWords.filter(word => !recentlyTestedIds.includes(word.id));
-    
-    // 除外後も単語が少ない場合は全単語を使用
-    if (currentTestWords.length < 5) {
-      console.log('除外後の単語が少ないため、全単語を使用します');
-      currentTestWords = [...allWords];
-    } else {
-      console.log(`過去30問で出題された${recentlyTestedIds.length}個の単語を除外しました`);
+    if (mode === 'mistakes') {
+      currentTestWords = allWords.filter(w => w.incorrectCount > 0);
+      if (currentTestWords.length === 0) { alert('間違えた単語がありません'); return; }
+    } else if (mode === 'unlearned') {
+      currentTestWords = allWords.filter(w => !w.learned);
+      if (currentTestWords.length === 0) { alert('全問学習済みです'); return; }
+    } else if (mode === 'all') {
+      currentTestWords = allWords.filter(w => !recentlyTestedIds.includes(w.id));
+      if(currentTestWords.length < 5) currentTestWords = [...allWords];
     }
   }
   
-  if (currentTestWords.length === 0) {
-    alert('テストできる単語がありません。');
-    return;
-  }
+  if (currentTestWords.length === 0) { alert('対象単語がありません'); return; }
   
-  // シャッフル
   currentTestWords = shuffle([...currentTestWords]);
   totalQuestions = currentTestWords.length;
   currentQuestionIndex = 0;
-  
-  console.log(`テスト開始: ${totalQuestions}問`);
-  console.log('テスト設定を保存:', lastTestSettings);
   
   changeScreen('test-screen');
   nextQuestion();
 }
 
-// ===================================
-// もう一回学習機能
-// ===================================
 function retryTest() {
-  console.log('もう一回学習を開始:', lastTestSettings);
-  
-  // 最後のテスト設定を使用してテストを再開
   testMode = lastTestSettings.mode;
   correctAnswers = 0;
   testResults = [];
   testStartTime = new Date();
   
-  // テスト用の単語リストを準備
-  if (lastTestSettings.mode === 'range') {
-    // カスタムテストの設定を復元
-    document.getElementById('start-row').value = lastTestSettings.startRow;
-    document.getElementById('end-row').value = lastTestSettings.endRow;
-    document.getElementById('mode-select').value = lastTestSettings.direction;
-    
+  // lastTestSettingsに基づいて再構築
+  if (testMode === 'range') {
     currentTestWords = allWords.slice(lastTestSettings.startRow - 1, lastTestSettings.endRow);
-  } else if (lastTestSettings.mode === 'mistakes') {
-    currentTestWords = allWords.filter(word => word.incorrectCount > 0);
-    
-    if (currentTestWords.length === 0) {
-      alert('間違えた単語がまだありません。');
-      showMenuScreen();
-      return;
-    }
-  } else if (lastTestSettings.mode === 'unlearned') {
-    currentTestWords = allWords.filter(word => !word.learned);
-    
-    if (currentTestWords.length === 0) {
-      alert('すべての単語が学習済みです！');
-      showMenuScreen();
-      return;
-    }
-  } else if (lastTestSettings.mode === 'all') {
-    currentTestWords = allWords.filter(word => !recentlyTestedIds.includes(word.id));
-    
-    if (currentTestWords.length < 5) {
-      currentTestWords = [...allWords];
-    }
+  } else if (testMode === 'mistakes') {
+    currentTestWords = allWords.filter(w => w.incorrectCount > 0);
+  } else if (testMode === 'unlearned') {
+    currentTestWords = allWords.filter(w => !w.learned);
+  } else {
+    currentTestWords = allWords.filter(w => !recentlyTestedIds.includes(w.id));
+    if(currentTestWords.length < 5) currentTestWords = [...allWords];
   }
   
-  // シャッフル
+  if (currentTestWords.length === 0) { alert('単語がありません'); showMenuScreen(); return; }
+  
   currentTestWords = shuffle([...currentTestWords]);
   totalQuestions = currentTestWords.length;
   currentQuestionIndex = 0;
-  
-  console.log(`もう一回学習: ${totalQuestions}問`);
   
   changeScreen('test-screen');
   nextQuestion();
 }
 
 // ===================================
-// テスト画面の操作
+// 次の問題へ（修正版）
 // ===================================
 function nextQuestion() {
   if (currentQuestionIndex >= totalQuestions) {
@@ -967,101 +699,51 @@ function nextQuestion() {
   resetState();
   currentQuestionIndex++;
   currentQuestion = currentTestWords[currentQuestionIndex - 1];
-  questionDirection = determineQuestionDirection();
   
-  let questionText = '', correctAnswer = '', answerLanguage = '';
-  if (questionDirection === 'E_to_J') {
-    questionText = currentQuestion.english;
-    correctAnswer = currentQuestion.japanese;
-    answerLanguage = 'japanese';
+  // ★修正: どのモードでも、保存された設定(lastTestSettings)に従って方向を決める
+  if (lastTestSettings.direction === 'random') {
+    questionDirection = Math.random() < 0.5 ? 'E_to_J' : 'J_to_E';
   } else {
-    questionText = currentQuestion.japanese;
-    correctAnswer = currentQuestion.english;
-    answerLanguage = 'english';
+    questionDirection = lastTestSettings.direction;
   }
+  
+  const qText = questionDirection === 'E_to_J' ? currentQuestion.english : currentQuestion.japanese;
+  const aText = questionDirection === 'E_to_J' ? currentQuestion.japanese : currentQuestion.english;
+  const lang = questionDirection === 'E_to_J' ? 'japanese' : 'english';
   
   document.getElementById('progress-text').textContent = `問題 ${currentQuestionIndex} / ${totalQuestions}`;
-  document.getElementById('current-mode').textContent = getModeName(questionDirection);
-  document.getElementById('question').textContent = questionText;
+  document.getElementById('current-mode').textContent = questionDirection === 'E_to_J' ? '英 → 日' : '日 → 英';
+  document.getElementById('question').textContent = qText;
   
-  // 英→日の場合、発音ボタンを表示
   const speakBtn = document.getElementById('speak-btn');
-  if (questionDirection === 'E_to_J' && speechSupported) {
-    speakBtn.style.display = 'inline-block';
-  } else {
-    speakBtn.style.display = 'none';
-  }
+  // 英→日の場合、または日→英で答え（英語）を表示した後など、発音ボタンの制御
+  speakBtn.style.display = (questionDirection === 'E_to_J' && speechSupported) ? 'inline-block' : 'none';
   
-  // 選択肢を事前生成
-  prepareChoices(correctAnswer, answerLanguage);
+  prepareChoices(aText, lang);
 }
 
-function determineQuestionDirection() {
-  const mode = lastTestSettings.mode === 'range' 
-    ? lastTestSettings.direction 
-    : document.getElementById('mode-select').value;
-    
-  if (mode === 'E_to_J') return 'E_to_J';
-  if (mode === 'J_to_E') return 'J_to_E';
-  return Math.random() < 0.5 ? 'E_to_J' : 'J_to_E';
-}
-
-function getModeName(direction) {
-  return direction === 'E_to_J' ? '英語 → 日本語' : '日本語 → 英語';
-}
-
-function prepareChoices(correctAnswer, answerLanguage) {
-  const incorrectAnswers = new Set();
-  const maxAttempts = allWordsForChoices.length * 3;
+function prepareChoices(correct, lang) {
+  const choices = new Set();
+  choices.add(String(correct).trim());
+  
   let attempts = 0;
-  
-  console.log('=== 選択肢生成開始 ===');
-  console.log('正解:', correctAnswer, 'タイプ:', typeof correctAnswer);
-  console.log('言語:', answerLanguage);
-  
-  // 正解と異なる単語を3つ選択
-  while (incorrectAnswers.size < 3 && attempts < maxAttempts) {
+  while(choices.size < 4 && attempts < 100) {
     attempts++;
-    const randomWord = allWordsForChoices[Math.floor(Math.random() * allWordsForChoices.length)];
-    
-    let potentialAnswer = answerLanguage === 'japanese' ? randomWord.japanese : randomWord.english;
-    
-    if (attempts <= 5) {
-      console.log(`試行 ${attempts}:`, potentialAnswer, 'タイプ:', typeof potentialAnswer);
-    }
-    
-    potentialAnswer = String(potentialAnswer).trim();
-    
-    if (potentialAnswer && 
-        potentialAnswer !== String(correctAnswer).trim() && 
-        potentialAnswer !== '' &&
-        potentialAnswer !== 'undefined' &&
-        potentialAnswer !== 'null') {
-      incorrectAnswers.add(potentialAnswer);
-    }
+    const w = allWordsForChoices[Math.floor(Math.random() * allWordsForChoices.length)];
+    const val = String(lang === 'japanese' ? w.japanese : w.english).trim();
+    if(val && val !== 'undefined') choices.add(val);
   }
   
-  console.log('不正解の選択肢:', Array.from(incorrectAnswers));
-  console.log('試行回数:', attempts);
+  const arr = shuffle(Array.from(choices));
+  const div = document.getElementById('choices');
+  div.innerHTML = '';
   
-  if (incorrectAnswers.size < 3) {
-    console.warn('⚠️ 選択肢が不足:', incorrectAnswers.size, '個');
-  }
-  
-  const options = shuffle([String(correctAnswer).trim(), ...Array.from(incorrectAnswers)]);
-  const choicesDiv = document.getElementById('choices');
-  choicesDiv.innerHTML = '';
-  
-  console.log('最終的な選択肢:', options);
-  
-  options.forEach(option => {
-    const button = document.createElement('button');
-    button.textContent = option;
-    button.onclick = (e) => checkAnswer(option, correctAnswer, e.target);
-    choicesDiv.appendChild(button);
+  arr.forEach(c => {
+    const btn = document.createElement('button');
+    btn.textContent = c;
+    btn.onclick = (e) => checkAnswer(c, correct, e.target);
+    div.appendChild(btn);
   });
-  
-  console.log('=== 選択肢生成完了 ===');
 }
 
 function showChoices() {
@@ -1070,364 +752,252 @@ function showChoices() {
   document.getElementById('idk-btn').disabled = false;
 }
 
-function checkAnswer(selected, correct, buttonElement) {
+function checkAnswer(selected, correct, btn) {
   const isCorrect = String(selected).trim() === String(correct).trim();
+  disableAllButtons();
+  if(btn) btn.classList.add('selected');
   
-  const allButtons = document.querySelectorAll('#choices button');
-  allButtons.forEach(btn => {
-    btn.disabled = true;
-    btn.style.cursor = 'not-allowed';
-  });
+  if(isCorrect) correctAnswers++;
   
-  if (buttonElement) {
-    buttonElement.classList.add('selected');
-  }
-  
-  if (isCorrect) {
-    correctAnswers++;
-  }
-  
-  // 日→英の場合、正解の英語を読み上げ
-  if (questionDirection === 'J_to_E' && speechSupported) {
+  // 日英の場合、正解の英語を読み上げ
+  if(questionDirection === 'J_to_E' && speechSupported) {
     speakText(currentQuestion.english, 'en-US');
   }
   
-  testResults.push({
-    wordId: currentQuestion.id,
-    correct: isCorrect,
-    direction: questionDirection,
-    userAnswer: String(selected)
-  });
-  
-  // オンライン時は即座にスプレッドシートに保存
-  if (isOnline) {
-    saveAnswerRealtime(currentQuestion.id, isCorrect, questionDirection, String(selected));
-  }
-  
+  saveResultItem(isCorrect, String(selected));
   showFeedback(isCorrect, correct);
-  
-  if (autoSaveEnabled) {
-    saveProgress();
-  }
+  if(autoSaveEnabled) saveProgress();
 }
 
 function markAsIncorrect() {
-  const correctAnswer = questionDirection === 'E_to_J' ? currentQuestion.japanese : currentQuestion.english;
+  const correct = questionDirection === 'E_to_J' ? currentQuestion.japanese : currentQuestion.english;
+  disableAllButtons();
   
   document.getElementById('show-choices-btn').disabled = true;
   document.getElementById('idk-btn').disabled = true;
+  
+  saveResultItem(false, 'わからない');
+  showFeedback(false, correct);
+  if(autoSaveEnabled) saveProgress();
+}
 
-  const allButtons = document.querySelectorAll('#choices button');
-  allButtons.forEach(btn => {
-    btn.disabled = true;
-    btn.style.cursor = 'not-allowed';
+function disableAllButtons() {
+  document.querySelectorAll('#choices button').forEach(b => {
+    b.disabled = true;
+    b.style.cursor = 'not-allowed';
   });
-  
-  testResults.push({
+}
+
+function saveResultItem(isCorrect, answer) {
+  const item = {
     wordId: currentQuestion.id,
-    correct: false,
+    correct: isCorrect,
     direction: questionDirection,
-    userAnswer: 'わからない'
-  });
+    userAnswer: answer
+  };
+  testResults.push(item);
   
-  // オンライン時は即座にスプレッドシートに保存
-  if (isOnline) {
-    saveAnswerRealtime(currentQuestion.id, false, questionDirection, 'わからない');
-  }
-  
-  showFeedback(false, correctAnswer);
-  
-  if (autoSaveEnabled) {
-    saveProgress();
+  if(isOnline) {
+    const eng = currentQuestion.english;
+    const jap = currentQuestion.japanese;
+    google.script.run.logTestResult(item.wordId, isCorrect, item.direction, answer, eng, jap, currentBookId);
   }
 }
 
-function showFeedback(isCorrect, correctAnswer) {
-  const feedbackEl = document.getElementById('feedback');
-  const nextBtn = document.getElementById('next-btn');
+function showFeedback(isCorrect, correctText) {
+  const fb = document.getElementById('feedback');
+  const next = document.getElementById('next-btn');
+  fb.className = isCorrect ? 'feedback correct' : 'feedback incorrect';
+  fb.textContent = isCorrect ? '✓ 正解！' : `✗ 不正解。正解: ${correctText}`;
   
-  feedbackEl.className = isCorrect ? 'feedback correct' : 'feedback incorrect';
-  feedbackEl.textContent = isCorrect ? '✓ 正解！' : `✗ 不正解。正解は「${correctAnswer}」です。`;
-  
-  if (currentQuestionIndex >= totalQuestions) {
-    nextBtn.innerHTML = '結果画面へ →';
-  } else {
-    nextBtn.innerHTML = '次の問題へ →';
-  }
-  nextBtn.classList.remove('hidden');
+  next.innerHTML = currentQuestionIndex >= totalQuestions ? '結果を見る →' : '次の問題へ →';
+  next.classList.remove('hidden');
 }
 
 function resetState() {
   document.getElementById('choices-container').classList.add('hidden');
   document.getElementById('choices').innerHTML = '';
-  document.getElementById('feedback').textContent = '';
   document.getElementById('feedback').className = '';
+  document.getElementById('feedback').textContent = '';
   document.getElementById('next-btn').classList.add('hidden');
   document.getElementById('show-choices-btn').classList.remove('hidden');
-  document.getElementById('idk-btn').classList.remove('hidden');
-  
   document.getElementById('show-choices-btn').disabled = false;
   document.getElementById('idk-btn').disabled = false;
 }
 
 // ===================================
-// リアルタイム保存機能
-// ===================================
-function saveAnswerRealtime(wordId, isCorrect, direction, userAnswer) {
-  const english = currentQuestion.english;
-  const japanese = currentQuestion.japanese;
-  
-  google.script.run
-    .withSuccessHandler(function(response) {
-      console.log('リアルタイム保存成功:', wordId);
-    })
-    .withFailureHandler(function(error) {
-      console.error('リアルタイム保存エラー:', error);
-    })
-    .logTestResult(wordId, isCorrect, direction, userAnswer, english, japanese, currentBookId);
-}
-
-// ===================================
-// 進捗保存機能
+// 進捗保存
 // ===================================
 function saveProgress() {
-  const progress = {
-    testMode: testMode,
-    currentQuestionIndex: currentQuestionIndex,
-    totalQuestions: totalQuestions,
-    correctAnswers: correctAnswers,
-    testResults: testResults,
-    currentTestWords: currentTestWords,
-    testStartTime: testStartTime,
-    lastTestSettings: lastTestSettings,
-    currentBookId: currentBookId
+  const p = {
+    testMode, currentQuestionIndex, totalQuestions, correctAnswers,
+    testResults, currentTestWords, testStartTime, lastTestSettings, currentBookId
   };
-  
-  try {
-    localStorage.setItem('testProgress', JSON.stringify(progress));
-    console.log('進捗を保存しました');
-  } catch (e) {
-    console.error('進捗保存エラー:', e);
-  }
+  localStorage.setItem('testProgress', JSON.stringify(p));
 }
-
 function loadProgress() {
   try {
-    const saved = localStorage.getItem('testProgress');
-    if (saved) {
-      const progress = JSON.parse(saved);
-      
-      const now = new Date();
-      const savedTime = new Date(progress.testStartTime);
-      const hoursDiff = (now - savedTime) / (1000 * 60 * 60);
-      
-      if (hoursDiff < 24) {
-        return progress;
-      }
+    const s = localStorage.getItem('testProgress');
+    if(s) {
+      const p = JSON.parse(s);
+      if((new Date() - new Date(p.testStartTime)) < 86400000) return p;
     }
-  } catch (e) {
-    console.error('進捗読み込みエラー:', e);
-  }
+  } catch(e){}
   return null;
 }
-
-function clearProgress() {
-  try {
-    localStorage.removeItem('testProgress');
-    console.log('進捗をクリアしました');
-  } catch (e) {
-    console.error('進捗クリアエラー:', e);
-  }
-}
-
+function clearProgress() { localStorage.removeItem('testProgress'); }
 function restoreProgress() {
-  const progress = loadProgress();
-  
-  if (progress) {
-    if (confirm('前回の続きから始めますか？')) {
-      testMode = progress.testMode;
-      currentQuestionIndex = progress.currentQuestionIndex;
-      totalQuestions = progress.totalQuestions;
-      correctAnswers = progress.correctAnswers;
-      testResults = progress.testResults;
-      currentTestWords = progress.currentTestWords;
-      testStartTime = new Date(progress.testStartTime);
-      lastTestSettings = progress.lastTestSettings || lastTestSettings;
-      currentBookId = progress.currentBookId || currentBookId;
-      
-      changeScreen('test-screen');
-      nextQuestion();
-      
-      return true;
-    } else {
-      clearProgress();
-    }
+  const p = loadProgress();
+  if(p && confirm('前回の続きから始めますか？')) {
+    testMode = p.testMode;
+    currentQuestionIndex = p.currentQuestionIndex;
+    totalQuestions = p.totalQuestions;
+    correctAnswers = p.correctAnswers;
+    testResults = p.testResults;
+    currentTestWords = p.currentTestWords;
+    testStartTime = new Date(p.testStartTime);
+    lastTestSettings = p.lastTestSettings;
+    currentBookId = p.currentBookId || 'target1900';
+    changeScreen('test-screen');
+    nextQuestion();
+    return true;
   }
-  
+  clearProgress();
   return false;
 }
 
 // ===================================
-// 結果画面
+// 結果画面・終了
 // ===================================
 function showEndScreen() {
   changeScreen('end-screen');
-  
-  const accuracyPercent = Math.round((correctAnswers / totalQuestions) * 100);
-  
+  const acc = Math.round((correctAnswers / totalQuestions) * 100);
   document.getElementById('final-score').textContent = `${correctAnswers} / ${totalQuestions}`;
-  document.getElementById('final-accuracy').textContent = accuracyPercent + '%';
+  document.getElementById('final-accuracy').textContent = `${acc}%`;
+  document.getElementById('result-message').textContent = acc === 100 ? '完璧です！' : 'お疲れ様でした！';
   
-  let message = '';
-  if (accuracyPercent === 100) {
-    message = '完璧です！🎉';
-  } else if (accuracyPercent >= 80) {
-    message = '素晴らしい！';
-  } else if (accuracyPercent >= 60) {
-    message = 'よくできました！';
+  const data = { totalQuestions, correctAnswers, wordResults: testResults };
+  
+  if(!isOnline) {
+    pendingTestResults.push(data);
+    savePendingResults();
+    document.getElementById('xp-gained').textContent = `+${correctAnswers} XP(未送信)`;
   } else {
-    message = '引き続き頑張りましょう！';
+    google.script.run
+      .withSuccessHandler(res => {
+        if(res.success) {
+          userStats = res.stats;
+          updateDashboard();
+          saveToCache(allWords, res.stats, recentlyTestedIds, availableBooks);
+          document.getElementById('xp-gained').textContent = `+${correctAnswers} XP`;
+        }
+      })
+      .updateWordStatisticsFromAllLog(currentBookId);
   }
-  document.getElementById('result-message').textContent = message;
-  
-  saveResults();
   clearProgress();
 }
 
-function saveResults() {
-  const resultsData = {
-    totalQuestions: totalQuestions,
-    correctAnswers: correctAnswers,
-    wordResults: testResults
-  };
-  
-  // オフライン時は保留リストに追加
-  if (!isOnline) {
-    pendingTestResults.push(resultsData);
-    savePendingResults();
-    console.log('オフライン：結果を保留リストに追加しました');
-    document.getElementById('xp-gained').textContent = '+' + correctAnswers + ' XP（オフライン）';
-    return;
-  }
-  
-  // オンライン時：リアルタイム保存済みなので統計更新とXP表示のみ
-  console.log('オンライン：リアルタイム保存済み。統計を更新します');
-  
-  google.script.run
-    .withSuccessHandler(function(response) {
-      if (response.success) {
-        userStats = response.stats;
-        const xpGained = correctAnswers; // 1問1XP
-        document.getElementById('xp-gained').textContent = '+' + xpGained + ' XP';
-        updateDashboard();
-        
-        // キャッシュを更新
-        saveToCache(allWords, response.stats, recentlyTestedIds, availableBooks);
-      } else {
-        console.error('統計更新エラー:', response.message);
-      }
-    })
-    .withFailureHandler(function(error) {
-      console.error('統計更新エラー:', error);
-      const xpGained = correctAnswers;
-      document.getElementById('xp-gained').textContent = '+' + xpGained + ' XP';
-    })
-    .updateWordStatisticsFromAllLog(currentBookId);
+function changeScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
 }
-
-// ===================================
-// 画面遷移
-// ===================================
-function changeScreen(activeScreenId) {
-  document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
-  document.getElementById(activeScreenId).classList.add('active');
-}
-
 function showMenuScreen() {
-  // キャッシュから読み込み
   const cached = loadFromCache();
-  if (cached) {
-    console.log('キャッシュからメニューを表示');
+  if(cached) {
     allWords = cached.words;
-    allWordsForChoices = cached.words;
     userStats = cached.stats;
-    availableBooks = cached.availableBooks || [];
-    
     initializeMenu();
     changeScreen('menu-screen');
-    
-    // バックグラウンドで更新
-    refreshDataInBackground();
+    if(isOnline) refreshDataInBackground();
   } else {
-    // キャッシュがない場合は通常通り
     changeScreen('loading-screen');
     fetchWordData();
   }
 }
-
 function confirmExit() {
-  if (confirm('テストを終了してメニューに戻りますか？\n（進捗は自動保存されています）')) {
+  if(confirm('終了してメニューに戻りますか？')) {
     saveProgress();
     showMenuScreen();
   }
 }
 
 // ===================================
-// ユーティリティ関数
+// ユーティリティ
 // ===================================
-function shuffle(array) {
-  const newArray = [...array];
-  for (let i = newArray.length - 1; i > 0; i--) {
+function shuffle(arr) {
+  const newArr = [...arr];
+  for(let i = newArr.length - 1; i > 0; i--){
     const j = Math.floor(Math.random() * (i + 1));
-    [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+    [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
   }
-  return newArray;
+  return newArr;
 }
-
-function escapeHtml(text) {
-  const map = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;'
-  };
-  return String(text).replace(/[&<>"']/g, m => map[m]);
+function escapeHtml(str) {
+  if(!str) return '';
+  return String(str).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 }
 
 // ===================================
-// 音声読み上げ機能
+// 音声読み上げ機能（安全強化版）
 // ===================================
-function speakText(text, lang = 'en-US') {
-  if (!speechSupported) {
-    console.warn('音声読み上げがサポートされていません');
-    return;
+try {
+  if (speechSupported) {
+    speechSynthesis.onvoiceschanged = function() {
+      const voices = speechSynthesis.getVoices();
+      console.log('音声リスト読み込み:', voices.length);
+    };
   }
-  
-  // 既存の読み上げを停止
-  speechSynthesis.cancel();
-  
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = lang;
-  utterance.rate = 0.9; // 少しゆっくり
-  utterance.pitch = 1.0;
-  utterance.volume = 1.0;
-  
-  speechSynthesis.speak(utterance);
+} catch (e) {
+  console.error('音声初期化警告:', e);
 }
 
-// 問題の音声読み上げ（英語のみ）
+function speakText(text, lang) {
+  if (!lang) lang = 'en-US';
+  if (!speechSupported) { console.warn('音声未対応'); return; }
+
+  try {
+    // 既存キャンセル
+    speechSynthesis.cancel();
+
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = lang;
+      utterance.rate = 0.9;
+      utterance.volume = 1.0;
+      
+      // 音声の選択
+      const voices = speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        const v = voices.find(vo => vo.lang === lang && vo.name.includes('Google')) || 
+                  voices.find(vo => vo.lang === lang);
+        if (v) utterance.voice = v;
+      }
+
+      // ガベージコレクション対策（超重要）
+      currentUtterance = utterance;
+      utterance.onend = () => { currentUtterance = null; };
+      utterance.onerror = (e) => { console.error('音声エラー:', e); currentUtterance = null; };
+      
+      speechSynthesis.speak(utterance);
+    }, 50);
+  } catch (e) {
+    console.error('読み上げ実行エラー:', e);
+  }
+}
+
 function speakQuestion() {
   if (questionDirection === 'E_to_J' && currentQuestion) {
-    speakText(currentQuestion.english, 'en-US');
+    if (currentQuestion.english && currentQuestion.english.trim()) {
+      speakText(currentQuestion.english, 'en-US');
+    }
   }
 }
 
 // ===================================
-// ページ読み込み時に進捗を復元
+// 起動時チェック
 // ===================================
-window.addEventListener('load', function() {
-  setTimeout(function() {
+window.addEventListener('load', () => {
+  setTimeout(() => {
     if (document.getElementById('menu-screen').classList.contains('active')) {
       restoreProgress();
     }
